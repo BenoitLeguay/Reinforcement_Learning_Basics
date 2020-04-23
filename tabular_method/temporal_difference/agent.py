@@ -12,9 +12,9 @@ class Agent:
         self.next_action = None
         self.next_state = None
 
-    def e_greedy(self, state):
+    def e_greedy(self, state, always_greedy=False):
 
-        if np.random.rand() < self.epsilon.er:
+        if np.random.rand() < self.epsilon.er and always_greedy is False:
             action = np.random.randint(self.num_action)
         else:
             action = np.argmax(self.q[:, state])    # TODO: change to tie break argmax function
@@ -100,7 +100,7 @@ class ExpectedSarsaAgent(Agent):
         current_action = self.next_action
         current_state = self.next_state
 
-        current_q = self.q[:, current_state]
+        current_q = self.q[:, next_state]
         current_q_max = np.max(current_q)
         pi = np.ones(self.num_action) * (self.epsilon.er / self.num_action)
         pi += (current_q == current_q_max) * ((1 - self.epsilon.er) / np.sum(current_q == current_q_max))
