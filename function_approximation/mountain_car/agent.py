@@ -63,14 +63,14 @@ class Agent:
         if not done:
             next_action = self.update_step(state, reward)
         if done:
-            self.update_end(state, reward)
+            self.update_end(reward)
 
         return next_action
 
     def update_step(self, state, reward):
         pass
 
-    def update_end(self, state, reward):
+    def update_end(self, reward):
         pass
 
 
@@ -107,7 +107,7 @@ class SarsaAgent(Agent):
 
         return next_action
 
-    def update_end(self, state, reward):
+    def update_end(self, reward):
         current_action = self.next_action
         current_tiles = self.next_tiles
 
@@ -148,7 +148,7 @@ class QLearningAgent(Agent):
 
         return self.next_action
 
-    def update_end(self, state, reward):
+    def update_end(self, reward):
 
         current_action = self.next_action
         current_tiles = self.next_tiles
@@ -190,7 +190,7 @@ class ExpectedSarsaAgent(Agent):
 
         return self.next_action
 
-    def update_end(self, state, reward):
+    def update_end(self, reward):
 
         current_action = self.next_action
         current_tiles = self.next_tiles
@@ -198,3 +198,7 @@ class ExpectedSarsaAgent(Agent):
         target = reward - np.sum(self.w[current_action][current_tiles])
         self.w[current_action][current_tiles] += self.learning_rate * target
 
+
+class SarsaLambdaAgent(Agent):
+    def __init__(self, agent_init):
+        super().__init__(agent_init)
