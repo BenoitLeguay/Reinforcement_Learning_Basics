@@ -2,8 +2,6 @@ import numpy as np
 import utils
 import variable as var
 
-
-np.random.seed(42)
 #  https://www.aaai.org/ocs/index.php/AAAI/AAAI12/paper/view/5092/5494
 #  http://incompleteideas.net/book/first/ebook/node89.html
 
@@ -14,12 +12,13 @@ class Agent:
 
         self.discount_factor = agent_init["discount_factor"]
         self.learning_rate = agent_init["learning_rate"]/agent_init["tile_coder"]["num_tilings"]
-        self.epsilon = utils.ExplorationRateDecay(*agent_init["exploration_rate"].values())
+        self.exploration_handler = utils.ExplorationRateDecay(*agent_init["exploration_rate"].values())
         self.num_action = agent_init["num_action"]
         self.w = np.zeros((agent_init["num_action"], agent_init["tile_coder"]["hash_size"]))
         self.tile_coder = utils.TileCoder(*agent_init["tile_coder"].values())
         self.max_position = agent_init["max_position_init"]
         self.max_position_reward_bonus = agent_init["max_position_reward_bonus"]
+        self.random_generator = np.random.RandomState(seed=agent_init["seed"])
         self.next_tiles = None
         self.next_action = None
 
@@ -29,10 +28,10 @@ class Agent:
         for action in range(self.num_action):
             action_values[action] = np.sum(self.w[action][active_tiles])
 
-        if np.random.rand() < self.epsilon.er:
-            action = np.random.randint(self.num_action)
+        if self.random_generator.rand() < self.exploration_handler():
+            action = self.random_generator.randint(self.num_action)
         else:
-            action = utils.argmax(action_values)
+            action = utils.argmax(action_values, random_generator=self.random_generator)
 
         return action
 
@@ -58,6 +57,7 @@ class Agent:
         if not done:
             next_action = self.update_step(state, reward)
         if done:
+            self.exploration_handler.next()
             self.update_end(reward)
 
         return next_action
@@ -104,7 +104,7 @@ class QLearningAgent(Agent):
 
         next_active_tiles = self.tile_coder.get_active_tiles(next_state)
 
-        target = reward + self.discount_factor * np.max(self.w[:, next_active_tiles], axis=0).sum() \
+        target = reward + self.discount_factor * np.max(self.w[:, next_active_tiles].sum(axis=1)) \
                  - np.sum(self.w[current_action][current_tiles])
         self.w[current_action][current_tiles] += self.learning_rate * target
 
@@ -131,8 +131,13 @@ class ExpectedSarsaAgent(Agent):
 
         next_active_tiles = self.tile_coder.get_active_tiles(next_state)
 
-        target = reward + self.discount_factor * np.mean(self.w[:, next_active_tiles].sum(axis=1)) \
-                 - np.sum(self.w[current_action][current_tiles])
+        current_q = self.w[:, next_active_tiles].sum(axis=1)
+        q_max = np.max(current_q)
+        pi = np.ones(self.num_action) * (self.exploration_handler() / self.num_action)
+        pi += (current_q == q_max) * ((1 - self.exploration_handler()) / np.sum(current_q == q_max))
+        expectation = np.sum(current_q * pi)
+
+        target = reward + self.discount_factor * expectation - np.sum(self.w[current_action][current_tiles])
         self.w[current_action][current_tiles] += self.learning_rate * target
 
         self.next_tiles = np.copy(next_active_tiles)
@@ -152,14 +157,13 @@ class ExpectedSarsaAgent(Agent):
 class SarsaLambdaAgent(Agent):
     def __init__(self, agent_init):
         super().__init__(agent_init)
-        self.learning_rate = utils.AdaptiveLearningRate()
-        self.trace_decay = agent_init["trace_decay"]
-        self.eligibility = np.zeros((agent_init["num_action"], agent_init["tile_coder"]["hash_size"]))
-        self.eligibility_method = agent_init["eligibility_method"]
+        self.eligibility_traces = utils.EligibilityTraces(agent_init["trace_decay"],
+                                                          (agent_init["num_action"], agent_init["tile_coder"]["hash_size"]),
+                                                          agent_init["eligibility_method"])
 
     def episode_init(self, state):
 
-        self.eligibility = np.zeros(self.eligibility.shape)
+        self.eligibility_traces.episode_reset()
 
         active_tiles = self.tile_coder.get_active_tiles(state)
         action = self.e_greedy(active_tiles)
@@ -176,22 +180,13 @@ class SarsaLambdaAgent(Agent):
         next_tiles = self.tile_coder.get_active_tiles(next_state)
         next_action = self.e_greedy(next_tiles)
 
-        td_error = reward
-        td_error -= np.sum(self.w[current_action, current_tiles])
+        td_error = reward + self.discount_factor * np.sum(self.w[next_action, next_tiles]) - np.sum(self.w[current_action, current_tiles])
 
-        self.update_eligibility(current_action, current_tiles)
+        self.eligibility_traces.update_traces(current_action, current_tiles)
 
-        td_error += self.discount_factor * np.sum(self.w[next_action, next_tiles])
-        eligibility_mask = np.zeros(self.tile_coder.hash_size, dtype=float)
-        eligibility_mask[current_tiles] = 1.0
+        self.w[current_action, current_tiles] += self.learning_rate * td_error * self.eligibility_traces()[current_action, current_tiles]
 
-        self.learning_rate.next(self.tile_coder.index_feature_to_mask_feature(current_tiles),
-                                self.tile_coder.index_feature_to_mask_feature(next_tiles),
-                                eligibility_mask,
-                                self.discount_factor)
-
-        self.w[current_action, current_tiles] += self.learning_rate.epsilon * td_error * self.eligibility[current_action, current_tiles]
-        self.eligibility[current_action, current_tiles] *= self.discount_factor * self.trace_decay
+        self.eligibility_traces.decay_traces(self.discount_factor, current_action, current_tiles)
 
         self.next_action = next_action
         self.next_tiles = next_tiles
@@ -202,17 +197,9 @@ class SarsaLambdaAgent(Agent):
         current_action = self.next_action
         current_tiles = self.next_tiles
 
-        td_error = reward
+        td_error = reward - np.sum(self.w[current_action, current_tiles])
 
-        td_error -= np.sum(self.w[current_action, current_tiles])
+        self.eligibility_traces.update_traces(current_action, current_tiles)
 
-        self.update_eligibility(current_action, current_tiles)
+        self.w[current_action, current_tiles] += self.learning_rate * td_error * self.eligibility_traces()[current_action, current_tiles]
 
-        self.w[current_action, current_tiles] += self.learning_rate.l * td_error * self.eligibility[current_action, current_tiles]
-
-    def update_eligibility(self, current_action, current_tiles):
-
-        if self.eligibility_method == 'accumulate':
-            self.eligibility[current_action, current_tiles] += 1
-        elif self.eligibility_method == 'replace':
-            self.eligibility[current_action, current_tiles] = 1
