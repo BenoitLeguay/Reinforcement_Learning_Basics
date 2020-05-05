@@ -2,17 +2,18 @@ import numpy as np
 import torch
 import variable as v
 import utils
+from copy import deepcopy
 
 #  https://arxiv.org/pdf/1810.09967.pdf
 
 
-class Agent:
+class DQNAgent:
     def __init__(self, agent_init):
         self.policy_type = agent_init["policy_type"]
         self.exploration_handler = utils.ExplorationRateDecay(*agent_init["exploration_rate"].values())
         self.temperature = agent_init["temperature"]
         self.num_action = agent_init["num_action"]
-        self.nn_handler = utils.NeuralNetworkHandler(agent_init["neural_network_handler"], agent_init['optim'], agent_init['replay_buffer'])
+        self.dqn_handler = utils.DQNHandler(agent_init["neural_network_handler"], agent_init['optim'], agent_init['replay_buffer'])
         self.max_position = agent_init["max_position_init"]
         self.max_position_reward_bonus = agent_init["max_position_reward_bonus"]
         self.random_generator = np.random.RandomState(seed=agent_init['seed'])
@@ -21,8 +22,8 @@ class Agent:
         self.next_action = None
 
     def policy(self, state):
-        state_tensor = self.nn_handler.to_float_tensor(state)
-        values = self.nn_handler.eval_nn(state_tensor).detach()
+        state_tensor = self.dqn_handler.to_float_tensor(state)
+        values = self.dqn_handler.eval_nn(state_tensor).detach()
 
         if self.policy_type == 'e-greedy':
             action = self.e_greedy(values)
@@ -72,31 +73,20 @@ class Agent:
         reward = self.max_position_reward_function(state[0], reward)
 
         next_action = -1
-        self.early_stop.sum_reward(reward)
 
         if not done:
             next_action = self.update_step(state, reward)
         if done:
-            self.exploration_handler.next()
             self.update_end(reward)
-            self.early_stop.append_sum_rewards()
 
         return next_action
-
-    def update_step(self, state, reward):
-        pass
-
-    def update_end(self, reward):
-        pass
-
-
-class DQN(Agent):
 
     def update_step(self, next_state, reward):
         current_action = self.next_action
         current_state = self.next_state
 
-        self.nn_handler.update_step(current_state, current_action, reward, next_state, 0, self.early_stop)
+        skip_training = self.early_stop.skip_episode()
+        self.dqn_handler.update_step(current_state, current_action, reward, next_state, 0, skip_training)
 
         next_action = self.policy(next_state)
 
@@ -109,4 +99,12 @@ class DQN(Agent):
         current_action = self.next_action
         current_state = self.next_state
 
-        self.nn_handler.update_step(current_state, current_action, reward, current_state, 1, self.early_stop)
+        skip_training = self.early_stop.skip_episode()
+        self.dqn_handler.update_step(current_state, current_action, reward, current_state, 1, skip_training)
+
+
+class DDQNAgent(DQNAgent):
+    def __init__(self, agent_init):
+        super().__init__(agent_init)
+        self.dqn_handler = utils.DDQNHandler(agent_init["neural_network_handler"], agent_init['optim'], agent_init['replay_buffer'])
+

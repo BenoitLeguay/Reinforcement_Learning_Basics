@@ -5,10 +5,23 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
-def moving_average(a, n=3):
-    ret = np.cumsum(a, dtype=float)
-    ret[n:] = ret[n:] - ret[:-n]
-    return ret[n - 1:] / n
+def get_from_dict(d, map_tuple):
+    return reduce(operator.getitem, map_tuple, d)
+
+
+def set_in_dict(d, map_tuple, value):
+    get_from_dict(d, map_tuple[:-1])[map_tuple[-1]] = value
+
+
+def rolling_window(a, window=3):
+
+    pad = np.ones(len(a.shape), dtype=np.int32)
+    pad[-1] = window-1
+    pad = list(zip(pad, np.zeros(len(a.shape), dtype=np.int32)))
+    a = np.pad(a, pad, mode='reflect')
+    shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
+    strides = a.strides + (a.strides[-1],)
+    return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
 
 
 def argmax(a, random_generator=None):
@@ -94,14 +107,20 @@ class AdaptiveLearningRate:
 class TrainSession:
     def __init__(self, agents, env, seed):
         env.seed(seed)
+        plt.style.use('ggplot')
         self.agents = agents
         self.env = env
         self.rewards_per_episode = {agent_name: np.array([]) for agent_name, _ in agents.items()}
         self.time_steps_per_episode = {agent_name: np.array([]) for agent_name, _ in agents.items()}
 
-    def train(self, n_episode=500, t_max_per_episode=200, graphical=False):
+    def train(self, n_episode=500, t_max_per_episode=200, graphical=False, agent_subset=None):
 
-        for agent_name, agent in self.agents.items():
+        if agent_subset:
+            agents = {agent_name: self.agents[agent_name] for agent_name in agent_subset}
+        else:
+            agents = self.agents
+
+        for agent_name, agent in agents.items():
 
             time_steps_per_episode = list()
             rewards_per_episode = list()
@@ -116,15 +135,22 @@ class TrainSession:
                     if graphical:
                         self.env.render()
 
-                    state, reward, done, info = self.env.step(next_action)
+                    state, reward, done, info = self.env.step(next_action)  # problem when the for loop end, while done is not True (agent_end not called)
                     next_action = agent.update(state, reward, done)
 
                     rewards += reward
 
                     if done:
                         break
+
+                if 'early_stop' in agent.__dict__.keys():
+                    agent.early_stop.append_sum_rewards(rewards)
+                    if agent.early_stop.stop_training():
+                        break
+
                 time_steps_per_episode.append(t)
                 rewards_per_episode.append(rewards)
+                agent.exploration_handler.next()
 
             self.time_steps_per_episode[agent_name] = np.concatenate([self.time_steps_per_episode[agent_name],
                                                                       np.array(time_steps_per_episode)])
@@ -133,34 +159,79 @@ class TrainSession:
 
             self.env.close()
 
-    def append_agent(self, agents):
+    def append_agents(self, agents):
 
-        assert all(item in agents for item in self.agents), "You are trying to overwrite agents dictionary"
+        assert not any(item in agents for item in self.agents), "You are trying to overwrite agents dictionary"
 
         self.agents.update(agents)
         self.rewards_per_episode.update({agent_name: np.array([]) for agent_name, _ in agents.items()})
         self.time_steps_per_episode.update({agent_name: np.array([]) for agent_name, _ in agents.items()})
 
-    def plot_results(self, moving_average_n=200):
-        series_to_plot = {'rewards': self.rewards_per_episode,
-                          'time_steps': self.time_steps_per_episode}
+        return list(agents.keys())
 
-        loss_per_agents = {'loss': {agent_name: (np.array(agent.nn_handler.loss_history) if 'nn_handler' in agent.__dict__.keys()
+    def pop_agents(self, agents):
+        valid_agent_name = set(agents).intersection(self.agents.keys())
+        for agent_name in valid_agent_name:
+            self.agents.pop(agent_name)
+
+    def parameter_grid_append(self, agent_object, base_agent_init, parameters_dict):
+
+        agents = {}
+        parameter_grid = list(dict(zip(parameters_dict, x)) for x in product(*parameters_dict.values()))
+        for parameters_dict in parameter_grid:
+            agent_init_tmp = deepcopy(base_agent_init)
+            agent_name = ""
+            for name, value in parameters_dict.items():
+                set_in_dict(agent_init_tmp, name, value)
+                agent_name += f"{'_'.join(name)}:{value};"
+
+            agents.update({agent_name: agent_object(agent_init_tmp)})
+            self.rewards_per_episode.update({agent_name: np.array([])})
+            self.time_steps_per_episode.update({agent_name: np.array([])})
+
+        self.agents.update(agents)
+
+        return list(agents.keys())
+
+    def plot_results(self, window=200, agent_subset=None):
+
+        if not agent_subset:
+            agent_subset = self.agents.keys()
+
+        series_to_plot = {'rewards': {agent_name: self.rewards_per_episode[agent_name] for agent_name in agent_subset},
+                          'time_steps': {agent_name: self.time_steps_per_episode[agent_name] for agent_name in agent_subset}}
+
+        agents_to_plot = {agent_name: self.agents[agent_name] for agent_name in agent_subset}
+        loss_per_agents = {'loss': {agent_name: (np.array(agent.dqn_handler.loss_history) if 'dqn_handler' in agent.__dict__.keys()
                                                  else np.array([]))
-                                    for agent_name, agent in self.agents.items()}}
+                                    for agent_name, agent
+                                    in agents_to_plot.items()}}
 
         series_to_plot.update(loss_per_agents)
 
-        for idx, (series_name, dict_series) in enumerate(series_to_plot.items()):
+        fig, axs = plt.subplots(len(series_to_plot), 1, figsize=(10, 20), facecolor='w', edgecolor='k')
+        axs = axs.ravel()
 
-            figure = plt.figure(idx)
+        for idx, (series_name, dict_series) in enumerate(series_to_plot.items()):
             for agent_name, series in dict_series.items():
-                series_mov_avg = moving_average(series, n=moving_average_n)
-                plt.plot(range(len(series_mov_avg)), series_mov_avg, label=agent_name)
-            figure.suptitle(f"{series_name} per episode", fontsize=15)
-            plt.ylabel(f"avg {series_name}", fontsize=10)
-            plt.xlabel(f"episodes", fontsize=10)
-            plt.legend()
+                if series.size == 0:
+                    axs[idx].plot([0.0], [0.0], label=agent_name)
+                    continue
+
+                series_mvg = rolling_window(series, window=window)
+                series_mvg_avg = np.mean(series_mvg, axis=1)
+                series_mvg_std = np.std(series_mvg, axis=1)
+
+                axs[idx].plot(range(len(series_mvg_avg)), series_mvg_avg, label=agent_name)
+                axs[idx].fill_between(range(len(series_mvg_avg)), series_mvg_avg - series_mvg_std,
+                                      series_mvg_avg + series_mvg_std, alpha=0.15)
+
+            box = axs[idx].get_position()
+            axs[idx].set_position([box.x0, box.y0, box.width * 0.8, box.height])
+            axs[idx].set_title(f"{series_name} per episode", fontsize=15)
+            axs[idx].set_ylabel(f"avg {series_name}", fontsize=10)
+            axs[idx].set_xlabel(f"episodes", fontsize=10)
+            axs[idx].legend(loc='center left', bbox_to_anchor=(1, 0.5))
 
 
 class EligibilityTraces:
@@ -182,5 +253,5 @@ class EligibilityTraces:
         elif self.eligibility_method == 'replace':
             self.traces[current_action, current_tiles] = 1
 
-    def decay_traces(self, discount_factor, current_action, current_tiles):
-        self.traces[current_action, current_tiles] *= discount_factor * self.trace_decay
+    def decay_traces(self, discount_factor):
+        self.traces *= discount_factor * self.trace_decay

@@ -6,7 +6,10 @@ import variable as var
 #  http://incompleteideas.net/book/first/ebook/node89.html
 
 
-class Agent:
+#  TODO: Rename Agent base class by Agent[FunctionApproximation] (e.g AgentTileCoder) for all agent using function approximation
+
+
+class TileCoderAgent:
 
     def __init__(self, agent_init):
 
@@ -57,7 +60,6 @@ class Agent:
         if not done:
             next_action = self.update_step(state, reward)
         if done:
-            self.exploration_handler.next()
             self.update_end(reward)
 
         return next_action
@@ -69,7 +71,7 @@ class Agent:
         pass
 
 
-class SarsaAgent(Agent):
+class SarsaAgent(TileCoderAgent):
 
     def update_step(self, next_state, reward):
         current_action = self.next_action
@@ -95,7 +97,7 @@ class SarsaAgent(Agent):
         self.w[current_action][current_tiles] += self.learning_rate * target
 
 
-class QLearningAgent(Agent):
+class QLearningAgent(TileCoderAgent):
 
     def update_step(self, next_state, reward):
 
@@ -122,7 +124,7 @@ class QLearningAgent(Agent):
         self.w[current_action][current_tiles] += self.learning_rate * target
 
 
-class ExpectedSarsaAgent(Agent):
+class ExpectedSarsaAgent(TileCoderAgent):
 
     def update_step(self, next_state, reward):
 
@@ -154,7 +156,7 @@ class ExpectedSarsaAgent(Agent):
         self.w[current_action][current_tiles] += self.learning_rate * target
 
 
-class SarsaLambdaAgent(Agent):
+class SarsaLambdaAgent(TileCoderAgent):
     def __init__(self, agent_init):
         super().__init__(agent_init)
         self.eligibility_traces = utils.EligibilityTraces(agent_init["trace_decay"],
@@ -184,9 +186,9 @@ class SarsaLambdaAgent(Agent):
 
         self.eligibility_traces.update_traces(current_action, current_tiles)
 
-        self.w[current_action, current_tiles] += self.learning_rate * td_error * self.eligibility_traces()[current_action, current_tiles]
+        self.w += self.learning_rate * td_error * self.eligibility_traces()
 
-        self.eligibility_traces.decay_traces(self.discount_factor, current_action, current_tiles)
+        self.eligibility_traces.decay_traces(self.discount_factor)
 
         self.next_action = next_action
         self.next_tiles = next_tiles

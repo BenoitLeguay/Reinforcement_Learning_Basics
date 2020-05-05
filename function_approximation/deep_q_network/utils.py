@@ -19,13 +19,6 @@ def set_in_dict(d, map_tuple, value):
     get_from_dict(d, map_tuple[:-1])[map_tuple[-1]] = value
 
 
-def moving_average(a, n=3):
-
-    ret = np.cumsum(a, dtype=float)
-    ret[n:] = ret[n:] - ret[:-n]
-    return ret[n - 1:] / n
-
-
 def rolling_window(a, window=3):
 
     pad = np.ones(len(a.shape), dtype=np.int32)
@@ -45,18 +38,15 @@ def argmax(a, random_generator=None):
     return index
 
 
-class NeuralNetworkHandler:
+class DQNHandler:
     def __init__(self, nnh_init, optimizer_args={}, replay_buffer_args={}):
         torch.manual_seed(nnh_init['seed'])
         self.discount_factor = nnh_init["discount_factor"]
         self.eval_nn = self.init_nn(nnh_init["nn_archi"])
-        self.target_nn = self.init_nn(nnh_init["nn_archi"])  # deepcopy(self.eval_nn)
-        self.eval_train_delay = nnh_init["eval_train_delay"]
         self.loss = torch.nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.eval_nn.parameters(), **optimizer_args)
         self.replay_buffer = ReplayBuffer(**replay_buffer_args)
         self.loss_history = list()
-        self.count_step = 0.0
 
     @staticmethod
     def to_float_tensor(a):
@@ -78,15 +68,52 @@ class NeuralNetworkHandler:
         nn = torch.nn.Sequential(*layers)
         return nn
 
-    def update_step(self, current_state, current_action, reward, next_state, done, early_stop):
+    def update_step(self, current_state, current_action, reward, next_state, done, skip_training):
 
         self.replay_buffer.append(current_state, current_action, reward, next_state, done)
 
-        if self.count_step % self.eval_train_delay == 0:
+        if len(self.replay_buffer) == self.replay_buffer.buffer_size and not skip_training:
+            experiences = self.replay_buffer.sample()
+            self.train(experiences)
+
+    def train(self, experiences):
+
+        states, actions, rewards, next_states, dones = map(self.to_float_tensor, list(zip(*experiences)))
+
+        current_values = self.eval_nn(states).gather(1, actions.long().unsqueeze(1)).squeeze()
+
+        next_values = self.eval_nn(next_states).detach()
+        next_values[dones.bool()] = 0.0
+        expected_values = rewards + self.discount_factor * next_values.max(1)[0]
+
+        self.update_nn(current_values, expected_values)
+
+    def update_nn(self, current_values, expected_values):
+
+        loss = self.loss(current_values, expected_values)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        self.loss_history.append(loss.item())
+
+
+class DDQNHandler(DQNHandler):
+    def __init__(self, nnh_init, optimizer_args={}, replay_buffer_args={}):
+        super().__init__(nnh_init, optimizer_args, replay_buffer_args)
+        self.target_nn = self.init_nn(nnh_init["nn_archi"])
+        self.eval_target_delay = nnh_init["eval_train_delay"]
+        self.count_step = 0.0
+
+    def update_step(self, current_state, current_action, reward, next_state, done, skip_training):
+
+        self.replay_buffer.append(current_state, current_action, reward, next_state, done)
+
+        if self.count_step % self.eval_target_delay == 0:
             self.target_nn.load_state_dict(self.eval_nn.state_dict())
         self.count_step += 1
 
-        if len(self.replay_buffer) == self.replay_buffer.buffer_size and not early_stop.skip_episode():
+        if len(self.replay_buffer) == self.replay_buffer.buffer_size and not skip_training:
             experiences = self.replay_buffer.sample()
             self.train(experiences)
 
@@ -101,15 +128,6 @@ class NeuralNetworkHandler:
         expected_values = rewards + self.discount_factor * next_values.max(1)[0]
 
         self.update_nn(current_values, expected_values)
-
-    def update_nn(self, current_values, expected_values):
-
-        loss = self.loss(current_values, expected_values)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-        self.loss_history.append(loss.item())
 
 
 class ReplayBuffer:
@@ -187,23 +205,27 @@ class TrainSession:
                 rewards = 0.0
                 state = self.env.reset()
                 next_action = agent.episode_init(state)
-                if 'early_stop' in agent.__dict__.keys():
-                    if agent.early_stop.stop_training():
-                        break
 
                 for t in range(t_max_per_episode):
                     if graphical:
                         self.env.render()
 
-                    state, reward, done, info = self.env.step(next_action)
+                    state, reward, done, info = self.env.step(next_action)  # problem when the for loop end, while done is not True (agent_end not called)
                     next_action = agent.update(state, reward, done)
 
                     rewards += reward
 
                     if done:
                         break
+
+                if 'early_stop' in agent.__dict__.keys():
+                    agent.early_stop.append_sum_rewards(rewards)
+                    if agent.early_stop.stop_training():
+                        break
+
                 time_steps_per_episode.append(t)
                 rewards_per_episode.append(rewards)
+                agent.exploration_handler.next()
 
             self.time_steps_per_episode[agent_name] = np.concatenate([self.time_steps_per_episode[agent_name],
                                                                       np.array(time_steps_per_episode)])
@@ -219,6 +241,8 @@ class TrainSession:
         self.agents.update(agents)
         self.rewards_per_episode.update({agent_name: np.array([]) for agent_name, _ in agents.items()})
         self.time_steps_per_episode.update({agent_name: np.array([]) for agent_name, _ in agents.items()})
+
+        return list(agents.keys())
 
     def pop_agents(self, agents):
         valid_agent_name = set(agents).intersection(self.agents.keys())
@@ -253,7 +277,7 @@ class TrainSession:
                           'time_steps': {agent_name: self.time_steps_per_episode[agent_name] for agent_name in agent_subset}}
 
         agents_to_plot = {agent_name: self.agents[agent_name] for agent_name in agent_subset}
-        loss_per_agents = {'loss': {agent_name: (np.array(agent.nn_handler.loss_history) if 'nn_handler' in agent.__dict__.keys()
+        loss_per_agents = {'loss': {agent_name: (np.array(agent.dqn_handler.loss_history) if 'dqn_handler' in agent.__dict__.keys()
                                                  else np.array([]))
                                     for agent_name, agent
                                     in agents_to_plot.items()}}
@@ -291,19 +315,18 @@ class EarlyStop:
         self.stop_training_threshold = stop_training_threshold
         self.episode_window_skip = episode_window_skip
         self.episode_window_stop = episode_window_stop
-        self.episode_rewards = 0.0
         self.rewards_per_episode = deque(maxlen=episode_window_stop)
         self.skip_episode_history = list()
         self.stop_episode_history = list()
 
-    def sum_reward(self, reward):
-        self.episode_rewards += reward
-
-    def append_sum_rewards(self):
-        self.rewards_per_episode.append(self.episode_rewards)
-        self.episode_rewards = 0.0
+    def append_sum_rewards(self, episode_rewards):
+        self.rewards_per_episode.append(episode_rewards)
 
     def skip_episode(self):
+        if len(self.rewards_per_episode) < self.episode_window_skip:
+            self.skip_episode_history.append(False)
+            return False
+
         last_n_episodes = [self.rewards_per_episode[-idx] for idx in range(1, 1 + self.episode_window_skip)]
         skip_episode = np.mean(last_n_episodes) >= self.skip_training_threshold
         self.skip_episode_history.append(skip_episode)
@@ -314,6 +337,7 @@ class EarlyStop:
         if len(self.rewards_per_episode) < self.rewards_per_episode.maxlen:
             self.stop_episode_history.append(False)
             return False
+
         stop_episode = np.mean(self.rewards_per_episode) >= self.stop_training_threshold
         self.stop_episode_history.append(stop_episode)
 
