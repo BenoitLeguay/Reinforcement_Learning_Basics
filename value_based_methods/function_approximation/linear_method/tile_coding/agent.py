@@ -205,3 +205,64 @@ class SarsaLambdaAgent(TileCoderAgent):
 
         self.w[current_action, current_tiles] += self.learning_rate * td_error * self.eligibility_traces()[current_action, current_tiles]
 
+
+class TrueSarsaLambdaAgent(TileCoderAgent):
+    def __init__(self, agent_init):
+        super().__init__(agent_init)
+        self.current_action_value_old = 0.0
+        self.eligibility_traces = utils.TrueEligibilityTraces(agent_init["trace_decay"],
+                                                              (agent_init["num_action"], agent_init["tile_coder"]["hash_size"]))
+
+    def episode_init(self, state):
+
+        self.eligibility_traces.episode_reset()
+        self.current_action_value_old = 0.0
+
+        active_tiles = self.tile_coder.get_active_tiles(state)
+        action = self.e_greedy(active_tiles)
+
+        self.next_action = action
+        self.next_tiles = active_tiles
+
+        return action
+
+    def update_step(self, next_state, reward):
+        current_action = self.next_action
+        current_tiles = self.next_tiles
+
+        next_tiles = self.tile_coder.get_active_tiles(next_state)
+        next_action = self.e_greedy(next_tiles)
+
+        current_action_value = np.sum(self.w[current_action, current_tiles])
+        next_action_value = np.sum(self.w[next_action, next_tiles])
+
+        td_error = reward + self.discount_factor * next_action_value - current_action_value
+
+        self.eligibility_traces.update_traces(self.learning_rate, self.discount_factor, current_action, current_tiles)
+
+        current_action_diff = current_action_value - self.current_action_value_old
+
+        self.w += self.learning_rate * (td_error + current_action_diff) * self.eligibility_traces()
+        self.w[current_action, current_tiles] -= self.learning_rate * current_action_diff
+
+        self.current_action_value_old = next_action_value
+
+        self.next_action = next_action
+        self.next_tiles = next_tiles
+
+        return next_action
+
+    def update_end(self, reward):
+        current_action = self.next_action
+        current_tiles = self.next_tiles
+
+        current_action_value = np.sum(self.w[current_action, current_tiles])
+
+        td_error = reward - np.sum(self.w[current_action, current_tiles])
+
+        self.eligibility_traces.update_traces(self.learning_rate, self.discount_factor, current_action, current_tiles)
+
+        current_action_diff = current_action_value - self.current_action_value_old
+
+        self.w += self.learning_rate * (td_error + current_action_diff) * self.eligibility_traces()
+        self.w[current_action, current_tiles] -= self.learning_rate * current_action_diff

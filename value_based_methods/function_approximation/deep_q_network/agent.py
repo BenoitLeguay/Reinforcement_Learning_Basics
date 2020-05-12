@@ -21,7 +21,12 @@ class DQNAgent:
         self.next_state = None
         self.next_action = None
 
+    @staticmethod
+    def flatten_state(state):
+        return np.ravel(state)
+
     def policy(self, state):
+
         state_tensor = self.dqn_handler.to_float_tensor(state)
         values = self.dqn_handler.eval_nn(state_tensor).detach()
 
@@ -62,6 +67,8 @@ class DQNAgent:
         return reward
 
     def episode_init(self, state):
+        state = self.flatten_state(state)
+
         action = self.policy(state)
         self.next_action = action
         self.next_state = state
@@ -69,11 +76,11 @@ class DQNAgent:
         return action
 
     def update(self, state, reward, done):
+        state = self.flatten_state(state)
 
         reward = self.max_position_reward_function(state[0], reward)
 
         next_action = -1
-
         if not done:
             next_action = self.update_step(state, reward)
         if done:
