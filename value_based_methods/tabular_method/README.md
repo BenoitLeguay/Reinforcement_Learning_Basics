@@ -1,27 +1,5 @@
 # Value Based Method in a tabular setting
 
-In value-based methods, we estimate how good to be in a state. We take actions for the next state that will collect the highest total rewards. Then we infer the optimal policy by taking the path that maximize the sum of (discounted in the continuous case) rewards with: 
-
-- $V^*(s) = \max_{\pi}(V^\pi(s)) \> \forall \> s \> in \>S$
-- $V^*(s) = \max_{a}(Q(s, a)) \> \forall \> s \> in \>S$
-
-As you can see, we can use both Q-value function and Value function. 
-
-- $V^\pi(s)$ is the state-value function of MDP (Markov Decision Process). It's the expected return starting from state $s$ following policy $\pi$. Mathematically it is known that way: 
-
-   $V^\pi(s) = E_\pi[G_t | S_t=s]$
-
-
-- $Q^\pi(s, a)$ is the action-value function. It is the expected return starting from state $s$, following policy $\pi$, taking action $a$. It's focusing on the particular action at the particular state. Mathematically it is known that way:
-
-  $Q^\pi(s, a) = E_\pi[G_t | S_t=s, A_t=a]$	
-
-
-It exists a relationship between these functions when following policy $\pi$: 
-
-$V^\pi(s) = \sum_{a \in A} \pi(a, s) * Q^\pi(s, a)$
-
-
 ###  Algorithm(s) implemented
 
 ##### Sarsa
