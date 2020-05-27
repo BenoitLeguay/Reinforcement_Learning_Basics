@@ -32,3 +32,7 @@ class REINFORCEAgent:
     def predict(self, state):
         state = utils.to_tensor(state)
         return self.nn(state)
+
+
+class OffPolicyAgent:
+    pass

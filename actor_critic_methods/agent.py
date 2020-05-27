@@ -4,17 +4,19 @@ import torch
 import variable as v
 from torch.distributions import Categorical
 from copy import deepcopy
+from collections import namedtuple
+import abc
 
 
-class A2CAgent:
+class BaseACAgent(abc.ABC):
     """
-    Advantage Actor-Critic Agent
+    Base Actor-Critic Agent class used for both QAC Agent and A2C Agent
     """
     def __init__(self, agent_init):
         self.discount_factor = agent_init["discount_factor"]
         self.num_action = agent_init["num_action"]
         self.actor = SGDActor(agent_init["actor_init"], optimizer_args=agent_init["optim_actor"])
-        self.critic = VCritic(agent_init["critic_init"], optimizer_args=agent_init["optim_critic"])
+        self.critic = None
         self.random_generator = np.random.RandomState(seed=agent_init['seed'])
         self.next_state = None
         self.next_action = None
@@ -47,6 +49,23 @@ class A2CAgent:
             self.update_end(reward)
 
         return next_action
+
+    @abc.abstractmethod
+    def update_step(self, next_state, reward):
+        pass
+
+    @abc.abstractmethod
+    def update_end(self, reward):
+        pass
+
+
+class A2CAgent(BaseACAgent):
+    """
+    Advantage Actor-Critic Agent class
+    """
+    def __init__(self, agent_init):
+        super().__init__(agent_init)
+        self.critic = VCritic(agent_init["critic_init"], optimizer_args=agent_init["optim_critic"])
 
     def update_step(self, next_state, reward):
         current_action = self.next_action
@@ -141,13 +160,13 @@ class VCritic:
         self.loss_history.append(loss.item())
 
 
-class QACAgent(A2CAgent):
+class QACAgent(BaseACAgent):
     """
     Q Actor-Critic Agent class
     """
     def __init__(self, agent_init):
         super().__init__(agent_init)
-        self.critic = QCritic(agent_init["critic_init"])
+        self.critic = QCritic(agent_init["critic_init"], optimizer_args=agent_init["optim_critic"])
 
     def update_step(self, next_state, reward):
         current_action = self.next_action
@@ -207,19 +226,3 @@ class QCritic:
 
         self.loss_history.append(loss.item())
 
-
-class PPOAgent:
-    
-
-class PPOAKLActor:
-    """
-    Actor using Proximal Policy Optimization with Adaptive KL penalty along with SGD to optimize its policy
-    """
-    pass
-
-
-class PPOCOActor:
-    """
-    Actor using Proximal Policy Optimization with Clipped Objective along with SGD to optimize its policy
-    """
-    pass

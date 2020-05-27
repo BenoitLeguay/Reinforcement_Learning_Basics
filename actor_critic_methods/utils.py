@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from itertools import product
 from functools import reduce
 import operator
+import abc
 
 
 def get_from_dict(d, map_tuple):
@@ -48,7 +49,7 @@ def to_tensor(a):
     return torch.tensor(a).float()
 
 
-class TrainSession:
+class BaseTrainSession(abc.ABC):
     def __init__(self, agents, env, seed):
         env.seed(seed)
         plt.style.use('ggplot')
@@ -60,46 +61,6 @@ class TrainSession:
         self.num_lines_style = len(self.line_styles)
         self.cm = plt.get_cmap('tab10')
         self.max_diff_colors = 8
-
-    def train(self, n_episode=500, t_max_per_episode=200, graphical=False, agent_subset=None):
-
-        if agent_subset:
-            agents = {agent_name: self.agents[agent_name] for agent_name in agent_subset}
-        else:
-            agents = self.agents
-
-        for agent_name, agent in agents.items():
-
-            time_steps_per_episode = list()
-            rewards_per_episode = list()
-
-            for _ in tqdm(range(n_episode)):
-
-                rewards = 0.0
-                state = self.env.reset()
-                next_action = agent.episode_init(state)
-
-                for t in range(t_max_per_episode):
-                    if graphical:
-                        self.env.render()
-
-                    state, reward, done, info = self.env.step(next_action)  # problem when the for loop end, while done is not True (agent_end not called)
-                    next_action = agent.update(state, reward, done)
-
-                    rewards += reward
-
-                    if done:
-                        break
-
-                time_steps_per_episode.append(t)
-                rewards_per_episode.append(rewards)
-
-            self.time_steps_per_episode[agent_name] = np.concatenate([self.time_steps_per_episode[agent_name],
-                                                                      np.array(time_steps_per_episode)])
-            self.rewards_per_episode[agent_name] = np.concatenate([self.rewards_per_episode[agent_name],
-                                                                   np.array(rewards_per_episode)])
-
-            self.env.close()
 
     def append_agents(self, agents, overwrite=False):
 
@@ -190,3 +151,90 @@ class TrainSession:
             axs[idx].set_ylabel(f"avg {series_name}", fontsize=10)
             axs[idx].set_xlabel(f"episodes", fontsize=10)
             axs[idx].legend(loc='center left', bbox_to_anchor=(1, 0.5))
+
+    @abc.abstractmethod
+    def train(self, n_episode=500, t_max_per_episode=200, graphical=False, agent_subset=None):
+        pass
+
+
+class TrainSession(BaseTrainSession):
+    def train(self, n_episode=500, t_max_per_episode=200, graphical=False, agent_subset=None):
+
+        if agent_subset:
+            agents = {agent_name: self.agents[agent_name] for agent_name in agent_subset}
+        else:
+            agents = self.agents
+
+        for agent_name, agent in agents.items():
+
+            time_steps_per_episode = list()
+            rewards_per_episode = list()
+
+            for _ in tqdm(range(n_episode)):
+
+                rewards = 0.0
+                state = self.env.reset()
+                next_action = agent.episode_init(state)
+
+                for t in range(t_max_per_episode):
+                    if graphical:
+                        self.env.render()
+
+                    state, reward, done, info = self.env.step(next_action)  # problem when the for loop end, while done is not True (agent_end not called)
+                    next_action = agent.update(state, reward, done)
+
+                    rewards += reward
+
+                    if done:
+                        break
+
+                time_steps_per_episode.append(t)
+                rewards_per_episode.append(rewards)
+
+            self.time_steps_per_episode[agent_name] = np.concatenate([self.time_steps_per_episode[agent_name],
+                                                                      np.array(time_steps_per_episode)])
+            self.rewards_per_episode[agent_name] = np.concatenate([self.rewards_per_episode[agent_name],
+                                                                   np.array(rewards_per_episode)])
+
+        self.env.close()
+
+
+class PPOTrainSession(BaseTrainSession):
+    def train(self, n_episode=500, t_max_per_episode=200, graphical=False, agent_subset=None):
+        if agent_subset:
+            agents = {agent_name: self.agents[agent_name] for agent_name in agent_subset}
+        else:
+            agents = self.agents
+
+        for agent_name, agent in agents.items():
+
+            time_steps_per_episode = list()
+            rewards_per_episode = list()
+
+            for _ in tqdm(range(n_episode)):
+
+                rewards = 0.0
+                state = self.env.reset()
+
+                for t in range(t_max_per_episode):
+                    if graphical:
+                        self.env.render()
+                    next_action = agent.policy(state)
+                    next_state, reward, done, info = self.env.step(next_action)  # problem when the for loop end, while done is not True (agent_end not called)
+                    agent.update(reward, done)
+
+                    rewards += reward
+                    state = next_state
+
+                    if done:
+                        break
+
+                time_steps_per_episode.append(t)
+                rewards_per_episode.append(rewards)
+
+            self.time_steps_per_episode[agent_name] = np.concatenate([self.time_steps_per_episode[agent_name],
+                                                                      np.array(time_steps_per_episode)])
+            self.rewards_per_episode[agent_name] = np.concatenate([self.rewards_per_episode[agent_name],
+                                                                   np.array(rewards_per_episode)])
+
+        self.env.close()
