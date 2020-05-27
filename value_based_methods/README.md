@@ -1,4 +1,4 @@
-![1590586508219](/home/benoit/.config/Typora/typora-user-images/1590586508219.png)
+![1590586508219](/home/benoit/Documents/work/reinforcement_learning/photo/1590586508219.png)
 
 
 
